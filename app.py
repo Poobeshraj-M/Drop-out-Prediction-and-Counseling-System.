@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from flask_bcrypt import Bcrypt
 import sqlite3
 import os
+from datetime import datetime
 import io
 import json
 import smtplib
@@ -30,8 +31,9 @@ def log_event(username, event, details=""):
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute('INSERT INTO audit_logs (username, event, details) VALUES (?, ?, ?)', 
-                     (username, event, details))
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('INSERT INTO audit_logs (username, event, details, timestamp) VALUES (?, ?, ?, ?)', 
+                     (username, event, details, current_time))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -99,6 +101,8 @@ def predict():
         student_name = request.form.get('student_name')
         roll_number = request.form.get('roll_number')
         department = request.form.get('department', 'General')
+        email = request.form.get('email', '')
+        phone = request.form.get('phone', '')
         
         features = {
             'Attendance': float(request.form.get('attendance', 0)),
@@ -121,15 +125,16 @@ def predict():
         # Save to Database
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute('''
             INSERT INTO students 
-            (student_name, roll_number, department, attendance, marks, arrears, assignments, family_income, 
-             travel_distance, stress_level, feedback_sentiment, dropout_risk, counseling_recommendation)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (student_name, roll_number, department, email, phone, attendance, marks, arrears, assignments, family_income, 
+             travel_distance, stress_level, feedback_sentiment, dropout_risk, counseling_recommendation, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            student_name, roll_number, department, features['Attendance'], features['Marks'], features['Arrears'],
+            student_name, roll_number, department, email, phone, features['Attendance'], features['Marks'], features['Arrears'],
             features['Assignments_Submitted'], features['Family_Income'], features['Travel_Distance_km'],
-            features['Stress_Level'], features['Feedback_Sentiment'], risk_level, recommendation_text
+            features['Stress_Level'], features['Feedback_Sentiment'], risk_level, recommendation_text, current_time
         ))
         conn.commit()
         last_id = cursor.lastrowid
@@ -241,6 +246,9 @@ def dashboard():
         'high': [monthly_trend[m]['High'] for m in sorted_months]
     }
     
+    # Extract unique departments for the dropdown filter
+    unique_departments = sorted(list(dept_risk.keys()))
+    
     # Feature importance (from trained model)
     feature_importance = {}
     try:
@@ -258,6 +266,7 @@ def dashboard():
         risk_counts=risk_counts,
         risk_counts_json=json.dumps(risk_counts),
         dept_risk=json.dumps(dept_risk),
+        departments=unique_departments,
         attendance_ranges=json.dumps(attendance_ranges),
         stress_dist=json.dumps(stress_dist),
         trend_data=json.dumps(trend_data),
@@ -275,15 +284,34 @@ def student_history(roll_number):
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM students WHERE roll_number = ? ORDER BY timestamp DESC', (roll_number,))
     history = cursor.fetchall()
-    conn.close()
     
     if not history:
+        conn.close()
         flash("No history found for this roll number.", "danger")
         return redirect(url_for('dashboard'))
         
     student_name = history[0]['student_name']
+    email = history[0]['email']
+    phone = history[0]['phone']
     
-    return render_template('student_history.html', history=history, roll_number=roll_number, student_name=student_name)
+    # Fetch counseling sessions
+    cursor.execute('SELECT * FROM counseling_sessions WHERE student_roll_number = ? ORDER BY session_date DESC', (roll_number,))
+    sessions = cursor.fetchall()
+    
+    # Fetch chatbot logs
+    cursor.execute('SELECT * FROM chatbot_logs WHERE student_roll_number = ? ORDER BY timestamp ASC', (roll_number,))
+    chats = cursor.fetchall()
+    
+    conn.close()
+    
+    return render_template('student_history.html', 
+                           history=history, 
+                           roll_number=roll_number, 
+                           student_name=student_name,
+                           email=email,
+                           phone=phone,
+                           sessions=sessions,
+                           chats=chats)
 
 @app.route('/download-report/<int:id>')
 def download_report(id):
@@ -411,18 +439,19 @@ def upload_csv():
                     # Run prediction
                     risk_level = predict_risk(features)
                     recommendation_text = get_counseling_recommendation(risk_level, features)
+                    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     
                     # Insert into DB
                     cursor.execute('''
                         INSERT INTO students 
                         (student_name, roll_number, department, attendance, marks, arrears, assignments, family_income, 
-                         travel_distance, stress_level, feedback_sentiment, dropout_risk, counseling_recommendation)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         travel_distance, stress_level, feedback_sentiment, dropout_risk, counseling_recommendation, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         row['student_name'], row['roll_number'], row['department'], features['Attendance'], 
                         features['Marks'], features['Arrears'], features['Assignments_Submitted'], 
                         features['Family_Income'], features['Travel_Distance_km'], features['Stress_Level'], 
-                        features['Feedback_Sentiment'], risk_level, recommendation_text
+                        features['Feedback_Sentiment'], risk_level, recommendation_text, current_time
                     ))
                     
                     # Send Alert for High Risk
@@ -454,28 +483,34 @@ def model_performance():
     metrics = get_model_performance()
     return render_template('model_performance.html', metrics=metrics)
 
-@app.route('/chatbot', methods=['POST'])
-def chatbot_response():
-    user_msg = request.json.get('message', '').lower()
+
+@app.route('/add-counseling-note', methods=['POST'])
+def add_counseling_note():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+        
+    roll_number = request.form.get('roll_number')
+    notes = request.form.get('notes')
+    action = request.form.get('action')
+    counselor = session.get('admin_name', 'Admin')
     
-    responses = {
-        'stress': "I'm sorry you're feeling stressed. Managing academics can be tough. Try breaking your tasks into smaller goals and don't hesitate to talk to our campus counselor.",
-        'marks': "If you're worried about your grades, remember that consistency is key. Have you tried joining a study group or reaching out to your professors for extra help?",
-        'attendance': "Attending classes regularly is the first step to success. If travel or personal issues are making it hard, let's discuss how we can support you.",
-        'hello': "Hello! I'm your EduSustain AI assistant. How can I help you with your academic journey today?",
-        'hi': "Hi there! I'm here to support you. Are you feeling stressed or worried about your studies?",
-        'dropout': "Thinking about leaving? Please remember why you started. Most challenges are temporary. Let's look at available resources like scholarships or counseling.",
-        'help': "I can provide advice on managing stress, improving marks, or finding campus resources. Just tell me what's on your mind."
-    }
-    
-    # Simple keyword matching
-    reply = "I'm here to listen. Can you tell me more about that? For example, are you feeling stressed or worried about specific subjects?"
-    for key, resp in responses.items():
-        if key in user_msg:
-            reply = resp
-            break
-            
-    return jsonify({'reply': reply})
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('''
+            INSERT INTO counseling_sessions (student_roll_number, counselor_name, notes, action_taken, session_date)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (roll_number, counselor, notes, action, current_time))
+        conn.commit()
+        conn.close()
+        
+        log_event(session.get('admin_username'), "Counseling Note Added", f"Roll: {roll_number}")
+        flash("Counseling note added successfully!", "success")
+    except Exception as e:
+        flash(f"Error adding note: {e}", "danger")
+        
+    return redirect(url_for('student_history', roll_number=roll_number))
 
 @app.route('/manage-admins', methods=['GET', 'POST'])
 def manage_admins():

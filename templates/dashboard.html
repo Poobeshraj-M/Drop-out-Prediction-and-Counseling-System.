@@ -192,12 +192,8 @@
                     <div>
                         <select id="deptFilter" class="form-select" style="min-width: 180px;">
                             <option value="all">All Departments</option>
-                            {% set depts = [] %}
-                            {% for r in records %}
-                                {% if r['department'] and r['department'] not in depts %}
-                                    {% if depts.append(r['department']) %}{% endif %}
-                                    <option value="{{ r['department'] }}">{{ r['department'] }}</option>
-                                {% endif %}
+                            {% for dept in departments %}
+                                <option value="{{ dept }}">{{ dept }}</option>
                             {% endfor %}
                         </select>
                     </div>
@@ -423,6 +419,5 @@
         }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="{{ url_for('static', filename='chatbot.js') }}"></script>
-</body>
+    </body>
 </html>

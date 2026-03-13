@@ -16,6 +16,8 @@ def setup_db():
             student_name TEXT NOT NULL,
             roll_number TEXT NOT NULL,
             department TEXT DEFAULT 'General',
+            email TEXT,
+            phone TEXT,
             attendance REAL,
             marks REAL,
             arrears INTEGER,
@@ -27,6 +29,29 @@ def setup_db():
             dropout_risk TEXT,
             counseling_recommendation TEXT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Create counseling_sessions table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS counseling_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_roll_number TEXT NOT NULL,
+            counselor_name TEXT,
+            session_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+            notes TEXT,
+            action_taken TEXT
+        )
+    ''')
+
+    # Create chatbot_logs table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chatbot_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_roll_number TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            sender TEXT,
+            message TEXT
         )
     ''')
     
@@ -80,7 +105,7 @@ def setup_db():
             INSERT INTO admins (username, password, name) 
             VALUES (?, ?, ?), (?, ?, ?)
         ''', ('admin', admin_pass, 'System Administrator', 
-              'principal', principal_pass, 'Principal Smith'))
+              'principal', principal_pass, 'Principal'))
     
     conn.commit()
     conn.close()
